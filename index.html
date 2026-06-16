@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Gualataxi</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="./style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "leaflet": "https://esm.sh/leaflet@1.9.4?target=es2020",
+      "dayjs": "https://esm.sh/dayjs@1.11.9"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div id="topbar">
+      <button id="btnPassenger" class="big green">Pasajero</button>
+      <button id="btnDriver" class="big yellow">Conductor</button>
+    </div>
+
+    <div id="map" aria-label="mapa"></div>
+
+    <!-- Passenger Form -->
+    <div id="passengerForm" class="panel hidden">
+      <h3>Ingresar Pasajero</h3>
+      <label>Nombre (obligatorio)
+        <input id="p_name" type="text" />
+      </label>
+      <label>Teléfono (obligatorio)
+        <input id="p_phone" type="tel" />
+      </label>
+      <div class="row">
+        <button id="p_submit" class="green">Ingresar</button>
+        <button id="p_cancel">Cancelar</button>
+      </div>
+    </div>
+
+    <!-- Driver Form -->
+    <div id="driverForm" class="panel hidden">
+      <h3>Ingresar Conductor</h3>
+      <label>Nombre (obligatorio)
+        <input id="d_name" type="text" />
+      </label>
+      <label>Teléfono (obligatorio)
+        <input id="d_phone" type="tel" />
+      </label>
+      <label>Placa (obligatorio)
+        <input id="d_plate" type="text" />
+      </label>
+      <label>Disponible ahora?
+        <select id="d_available">
+          <option value="yes">Sí</option>
+          <option value="no">No</option>
+        </select>
+      </label>
+      <div class="row">
+        <button id="d_submit" class="yellow">Ingresar</button>
+        <button id="d_cancel">Cancelar</button>
+      </div>
+    </div>
+
+    <!-- Driver controls floating -->
+    <div id="driverControls" class="floating hidden">
+      <div>
+        <span id="driverLabel"></span>
+      </div>
+      <!-- latest incoming request summary for driver -->
+      <div id="lastRequest" style="font-size:13px;margin-top:8px;color:var(--muted)"></div>
+      <div class="row">
+        <button id="toggleAvailable" class="small">Cambiar disponibilidad</button>
+        <button id="driverLogout" class="small">Salir</button>
+      </div>
+    </div>
+
+    <!-- Simple toast -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
