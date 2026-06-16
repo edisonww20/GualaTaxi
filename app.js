@@ -35,10 +35,6 @@ const ui = {
 let map, driverMarkers = {}, watchId = null, drivers = loadDrivers();
 // layer to draw simple route polyline
 let routeLayer = null;
-// marker for showing passenger location when driver accepts / marks read
-let passengerMarker = null;
-// marker used to show driver's notification/position to the passenger when a status arrives
-let driverNotificationMarker = null;
 
 initMap();
 renderAllMarkers();
@@ -142,33 +138,7 @@ function driverSubmit(){
   showToast("Conductor ingresado");
   closeDriverForm();
   startDriverSession(id);
-
-  // try to capture immediate driver location and update passenger map so passengers see this driver in real time
-  if(navigator.geolocation){
-    navigator.geolocation.getCurrentPosition(pos=>{
-      const lat = pos.coords.latitude, lon = pos.coords.longitude;
-      drivers[id].lat = lat;
-      drivers[id].lon = lon;
-      drivers[id].updated = dayjs().toISOString();
-      saveDrivers();
-      updateDriverMarker(drivers[id]);
-      // if there's a stored passenger with coords, pass them so renderAllMarkers filters nearby available drivers
-      const storedP = JSON.parse(localStorage.getItem(STORAGE.PASSENGER) || "null");
-      const passengerLocation = (storedP && storedP.lat && storedP.lon) ? {lat: storedP.lat, lon: storedP.lon} : null;
-      renderAllMarkers(/*onlyAvailable=*/true, passengerLocation);
-      // center map on driver for their view
-      try{ map.setView([lat, lon], Math.max(map.getZoom(), 14)); }catch(e){}
-    }, ()=> {
-      // if we can't get position now, still refresh markers to show availability
-      const storedP = JSON.parse(localStorage.getItem(STORAGE.PASSENGER) || "null");
-      const passengerLocation = (storedP && storedP.lat && storedP.lon) ? {lat: storedP.lat, lon: storedP.lon} : null;
-      renderAllMarkers(true, passengerLocation);
-    }, {enableHighAccuracy:true, timeout:8000, maximumAge:5000});
-  } else {
-    const storedP = JSON.parse(localStorage.getItem(STORAGE.PASSENGER) || "null");
-    const passengerLocation = (storedP && storedP.lat && storedP.lon) ? {lat: storedP.lat, lon: storedP.lon} : null;
-    renderAllMarkers(true, passengerLocation);
-  }
+  renderAllMarkers();
 }
 
 function checkRestoreSession(){
@@ -276,8 +246,8 @@ function renderAllMarkers(onlyAvailable, passengerLocation){
   // Do not auto-use stored passenger coords: only apply proximity filtering when
   // an explicit passengerLocation is passed to this function.
 
-  // radius in meters to consider "nearby" (use 200 km when a passenger location is provided)
-  const NEARBY_METERS = passengerLocation ? 200000 : 3000;
+  // radius in meters to consider "nearby" (300 km)
+  const NEARBY_METERS = 300000;
 
   // remove existing markers
   Object.values(driverMarkers).forEach(m=>map.removeLayer(m));
@@ -463,94 +433,96 @@ async function markRequestRead(driverId){
     const driver = drivers[driverId];
     if(!driver || !driver.lat || !driver.lon){ showToast("No se conoce tu ubicación"); return; }
 
-    // prefer passenger location from the message; if missing, try stored passenger record
-    let plat = last.passengerLocation ? last.passengerLocation.lat : null;
-    let plon = last.passengerLocation ? last.passengerLocation.lon : null;
-    if((plat == null || plon == null)){
-      const storedP = JSON.parse(localStorage.getItem(STORAGE.PASSENGER) || "null");
-      if(storedP && storedP.lat && storedP.lon){
-        plat = storedP.lat; plon = storedP.lon;
-      }
-    }
+    // if passenger location exists, try to get a driving route (OSRM) and open map to show it
+    if(last.passengerLocation){
+      const plat = last.passengerLocation.lat, plon = last.passengerLocation.lon;
 
-    if(plat == null || plon == null){
-      showToast("No se conoce ubicación del pasajero");
-      return;
-    }
+      // remove previous route
+      if(routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
 
-    // remove previous passenger marker and route
-    try{ if(passengerMarker){ map.removeLayer(passengerMarker); passengerMarker = null; } }catch(e){}
-    if(routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
-
-    // add passenger marker and open popup with info
-    try{
-      const interText = last.intersection ? `Intersección: ${escapeHtml(last.intersection)}` : "";
-      const popupHtml = `<strong>${escapeHtml(last.passenger.name)}</strong><br/>${escapeHtml(last.passenger.phone || "")}<br/>${interText}`;
-      passengerMarker = L.marker([plat, plon]).addTo(map).bindPopup(popupHtml).openPopup();
-    }catch(e){}
-
-    // attempt to fetch a driving route from public OSRM (fallback to straight line)
-    let etaText = null;
-    try{
-      const url = `https://router.project-osrm.org/route/v1/driving/${driver.lon},${driver.lat};${plon},${plat}?overview=full&geometries=geojson`;
-      const res = await fetch(url);
-      if(res.ok){
-        const j = await res.json();
-        if(j.routes && j.routes.length){
-          const r = j.routes[0];
-          // draw route geometry (GeoJSON coordinates are [lon,lat])
-          const coords = r.geometry.coordinates.map(c=>[c[1], c[0]]);
-          routeLayer = L.polyline(coords, {color:"#2ecc71", weight:4, opacity:0.95}).addTo(map);
-          try{ map.fitBounds(routeLayer.getBounds().pad(0.15)); }catch(e){}
-          // use duration from route (seconds) to build ETA
-          const durationSec = Math.max(30, Math.round(r.duration || 30));
-          const mins = Math.round(durationSec / 60);
-          etaText = mins>0 ? `${mins} min` : `${durationSec} sec`;
+      // attempt to fetch a driving route from public OSRM (fallback to straight line)
+      let etaText = null;
+      try{
+        const url = `https://router.project-osrm.org/route/v1/driving/${driver.lon},${driver.lat};${plon},${plat}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        if(res.ok){
+          const j = await res.json();
+          if(j.routes && j.routes.length){
+            const r = j.routes[0];
+            // draw route geometry (GeoJSON coordinates are [lon,lat])
+            const coords = r.geometry.coordinates.map(c=>[c[1], c[0]]);
+            routeLayer = L.polyline(coords, {color:"#2ecc71", weight:4, opacity:0.95}).addTo(map);
+            try{ map.fitBounds(routeLayer.getBounds().pad(0.15)); }catch(e){}
+            // use duration from route (seconds) to build ETA
+            const durationSec = Math.max(30, Math.round(r.duration || 30));
+            const mins = Math.round(durationSec / 60);
+            etaText = mins>0 ? `${mins} min` : `${durationSec} sec`;
+          }
         }
+      }catch(e){
+        // ignore and fallback
       }
-    }catch(e){
-      // ignore and fallback
-    }
 
-    // fallback: straight line if OSRM failed
-    if(!routeLayer){
-      routeLayer = L.polyline([[driver.lat, driver.lon], [plat, plon]], {color:"#2ecc71", weight:4, opacity:0.9, dashArray: "6 6"}).addTo(map);
-      try{ map.fitBounds(routeLayer.getBounds().pad(0.25)); }catch(e){}
-      // estimate ETA using simple speed (40 km/h)
-      const dist = haversine(driver.lat, driver.lon, plat, plon); // meters
-      const speedMps = 40 * 1000 / 3600; // 40 km/h
-      const etaSec = Math.max(30, Math.round(dist / speedMps)); // at least 30s
-      etaText = Math.round(etaSec/60) > 0 ? `${Math.round(etaSec/60)} min` : `${Math.round(etaSec)} sec`;
-    }
+      // fallback: straight line if OSRM failed
+      if(!routeLayer){
+        routeLayer = L.polyline([[driver.lat, driver.lon], [plat, plon]], {color:"#2ecc71", weight:4, opacity:0.9, dashArray: "6 6"}).addTo(map);
+        try{ map.fitBounds(routeLayer.getBounds().pad(0.25)); }catch(e){}
+        // estimate ETA using simple speed (40 km/h)
+        const dist = haversine(driver.lat, driver.lon, plat, plon); // meters
+        const speedMps = 40 * 1000 / 3600; // 40 km/h
+        const etaSec = Math.max(30, Math.round(dist / speedMps)); // at least 30s
+        etaText = Math.round(etaSec/60) > 0 ? `${Math.round(etaSec/60)} min` : `${Math.round(etaSec)} sec`;
+      }
 
-    // mark driver unavailable (accepted) and persist
-    drivers[driverId].available = false;
-    drivers[driverId].updated = dayjs().toISOString();
-    saveDrivers();
-    renderAllMarkers();
+      // mark driver unavailable
+      drivers[driverId].available = false;
+      drivers[driverId].updated = dayjs().toISOString();
+      saveDrivers();
+      renderAllMarkers();
 
-    // create a status message for the passenger indicating "En camino" and ETA
-    try{
-      const statusText = etaText ? `En camino • ETA ${etaText}` : "En camino";
-      const statusMsg = {
-        id: "msg_"+Date.now(),
-        type: "status",
-        driverId: driverId,
+      // send status message to passenger (in-app)
+      const passengerMsg = {
+        id: "msg_status_"+Date.now(),
+        driverId,
         toPassengerId: last.passenger.id,
-        text: statusText,
+        type: "status",
+        text: `Voy en camino • ETA aprox ${etaText}`,
+        eta: etaText,
         created: dayjs().toISOString()
       };
-      all.push(statusMsg);
+      all.push(passengerMsg);
       localStorage.setItem(messagesKey, JSON.stringify(all));
-      // play a cheerful sound for the driver to confirm the notification was sent
-      try{ playStrongCheer(); }catch(e){}
-      showToast("Aviso enviado al pasajero");
-    }catch(e){
-      console.error("No se pudo enviar mensaje de estado:", e);
-    }
 
-    // update driver's UI display
-    displayLastRequestForDriver(driverId);
+      // if passenger currently logged in, show toast and draw a marker/popup for the message
+      const currentPassengerId = localStorage.getItem(STORAGE.CURRENT_PASSENGER_ID);
+      if(currentPassengerId === last.passenger.id){
+        showToast(`Voy en camino • ETA ${etaText}`);
+        // place a temporary popup at passenger location with "Marcar leído" button for passenger
+        const tmp = L.marker([plat, plon]).addTo(map);
+        const popupDiv = document.createElement("div");
+        popupDiv.innerHTML = `<div>Conductor ${escapeHtml(drivers[driverId].name)} — Voy en camino • ETA ${escapeHtml(etaText)}</div>`;
+        const btnRead = document.createElement("button");
+        btnRead.textContent = "Marcar leído";
+        btnRead.style.marginTop = "6px";
+        btnRead.style.padding = "6px 8px";
+        btnRead.addEventListener("click", ()=>{
+          try{ map.removeLayer(tmp); }catch(e){}
+          passengerMarkRead(); // go to inicio
+        });
+        popupDiv.appendChild(btnRead);
+        tmp.bindPopup(popupDiv).openPopup();
+        setTimeout(()=> { try{ if(map.hasLayer(tmp)) map.removeLayer(tmp); }catch(e){} }, 12000);
+
+        // play stronger joyful alert in the passenger session
+        try{ playStrongCheer(); }catch(e){}
+      }
+
+      // update driver's UI display
+      displayLastRequestForDriver(driverId);
+      return;
+    } else {
+      showToast("No se conoce ubicación del pasajero");
+    }
   }catch(e){
     console.error(e);
     showToast("Error procesando la solicitud");
@@ -674,38 +646,13 @@ function passengerMarkRead(){
   renderAllMarkers();
 }
 
-/**
- * Try to get an immediate location update for the active driver session.
- * This augments the geolocation.watchPosition used during startDriverSession so
- * we also refresh location on the global 5s tick for faster consistency.
- */
-function refreshDriverLocationNow(driverId){
-  if(!driverId || !navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(pos=>{
-    const lat = pos.coords.latitude, lon = pos.coords.longitude;
-    drivers[driverId] = drivers[driverId] || {};
-    drivers[driverId].lat = lat;
-    drivers[driverId].lon = lon;
-    drivers[driverId].updated = dayjs().toISOString();
-    saveDrivers();
-    updateDriverMarker(drivers[driverId]);
-  }, ()=>{/*silently ignore single-shot failures*/}, {enableHighAccuracy:true, maximumAge:3000, timeout:5000});
-}
-
 // periodic refresh every 5 seconds: reload drivers & messages from storage and update UI/markers
 setInterval(()=>{
   // reload drivers object from storage, keep any active session info
   const stored = JSON.parse(localStorage.getItem(STORAGE.DRIVERS) || "{}");
   drivers = Object.assign({}, stored);
-
-  // if a driver session is active, try a one-shot location refresh to keep location updated even on devices
-  // where watchPosition may be less responsive; this keeps availability/location fresh across app instances.
-  const did = localStorage.getItem(STORAGE.CURRENT_DRIVER_ID);
-  if(did){
-    refreshDriverLocationNow(did);
-  }
-
   // update UI if a driver is logged in
+  const did = localStorage.getItem(STORAGE.CURRENT_DRIVER_ID);
   if(did && drivers[did]){
     ui.driverLabel.textContent = `${drivers[did].name} • ${drivers[did].plate} • ${drivers[did].available? "Disponible":"No disponible"}`;
     ui.toggleAvailable.textContent = drivers[did].available? "Marcar no disponible":"Marcar disponible";
@@ -728,54 +675,6 @@ setInterval(()=>{
         try{ playStrongCheer(); }catch(e){}
         // also show a brief toast
         showToast(newStatus.text || "Tienes un nuevo mensaje");
-
-        // additionally, show driver's location and a simple route to the passenger on the map when possible
-        try{
-          // cleanup previous notification layers
-          if(driverNotificationMarker){ try{ map.removeLayer(driverNotificationMarker); }catch(e){} driverNotificationMarker = null; }
-          if(routeLayer){ try{ map.removeLayer(routeLayer); }catch(e){} routeLayer = null; }
-
-          const driverId = newStatus.driverId;
-          const driverObj = drivers[driverId];
-          // passenger coords from stored passenger record
-          const storedP = JSON.parse(localStorage.getItem(STORAGE.PASSENGER) || "null");
-          const plat = storedP && storedP.lat ? storedP.lat : null;
-          const plon = storedP && storedP.lon ? storedP.lon : null;
-
-          if(driverObj && driverObj.lat && driverObj.lon){
-            // add marker for driver with popup showing ETA/text
-            const popupHtml = `<strong>${escapeHtml(driverObj.name)}</strong><br/>${escapeHtml(driverObj.plate || "")}<br/>${escapeHtml(newStatus.text || "")}`;
-            driverNotificationMarker = L.marker([driverObj.lat, driverObj.lon]).addTo(map).bindPopup(popupHtml).openPopup();
-
-            // if we also know passenger location, draw a simple route (attempt OSRM then fallback to straight line)
-            if(plat != null && plon != null){
-              (async ()=>{
-                try{
-                  const url = `https://router.project-osrm.org/route/v1/driving/${driverObj.lon},${driverObj.lat};${plon},${plat}?overview=full&geometries=geojson`;
-                  const res = await fetch(url);
-                  if(res.ok){
-                    const j = await res.json();
-                    if(j.routes && j.routes.length){
-                      const r = j.routes[0];
-                      const coords = r.geometry.coordinates.map(c=>[c[1], c[0]]);
-                      routeLayer = L.polyline(coords, {color:"#ffd100", weight:4, opacity:0.95}).addTo(map);
-                      try{ map.fitBounds(routeLayer.getBounds().pad(0.15)); }catch(e){}
-                      return;
-                    }
-                  }
-                }catch(e){}
-                // fallback straight line
-                routeLayer = L.polyline([[driverObj.lat, driverObj.lon], [plat, plon]], {color:"#ffd100", weight:4, opacity:0.9, dashArray:"6 6"}).addTo(map);
-                try{ map.fitBounds(routeLayer.getBounds().pad(0.25)); }catch(e){}
-              })();
-            } else {
-              // center map on driver if passenger location missing
-              try{ map.setView([driverObj.lat, driverObj.lon], Math.max(map.getZoom(), 14)); }catch(e){}
-            }
-          }
-        }catch(e){
-          // silently ignore UI/map notification errors
-        }
       }
     }
   }catch(e){ /* ignore message-check errors */ }
