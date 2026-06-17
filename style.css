@@ -24,6 +24,16 @@ input,select{width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;marg
 .toast{position:absolute;left:50%;transform:translateX(-50%);bottom:90px;background:#222;color:#fff;padding:8px 12px;border-radius:8px;z-index:800}
 .leaflet-container{z-index:0}
 
+/* Move zoom controls slightly down so they don't overlap the topbar / driver controls */
+.leaflet-control-zoom {
+  top: 72px !important;
+  transition: top 160ms ease;
+}
+/* Slightly more offset on wider screens where topbar is centered */
+@media (min-width:600px){
+  .leaflet-control-zoom { top: 84px !important; }
+}
+
 /* pulse effect for incoming request on driver marker */
 .driver-btn.pulse {
   box-shadow: 0 0 0 rgba(46, 204, 113, 0.7);
